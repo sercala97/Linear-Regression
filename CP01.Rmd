@@ -1,0 +1,393 @@
+---
+title: "Salarios NBA"
+author: "Sergio Cañón"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  word_document:
+    toc: yes
+ 
+---
+```{r setup, warning=FALSE}
+```
+
+# Introducción 
+El objetivo del trabajo es el de crear un modelo con regresión lineal para predecir 
+los salarios de los jugadores de la NBA 
+
+## Data set
+
+El conjunto de datos desde la NBA y pertenece a un conjunto de datos de la misma 
+página oficial. Es de tipo multivariante y contiene 485 muestras de jugadores 
+con 28 variables, siendo al variable `nba$Salary` nuestro target.
+
+## Metodología 
+La metodología a seguir es la creación de una fórmula de regresión lineal e
+intentar ver sí con la normalidad y sin ella se puede obtener un modelo 
+predictivo para un salario. Vamos a incluir los equipos de la NBA por qué el
+tope salarial de cada equipo varía en función de diferentes variables y también 
+vamos a incluir la procedencia del jugador que aunque en la vida real no se pueda
+poner un salario a un jugador por su procedencia queremos introducirlo para poder 
+ver si nos da algún tipo de información.
+
+# Cargar librerías
+```{r echo=TRUE, eval=TRUE,message=FALSE,warning=FALSE}
+library(readr) 
+library(pander)
+library(rmdformats)
+library(dplyr)
+library(skimr)
+library(tidyr)
+library(ggplot2)
+library(gridExtra)
+library(psych)
+
+library(fastDummies)
+library(gvlma)
+library(car)
+library(carData)
+
+library(gvlma)
+library(MASS)
+
+```
+
+
+# Importación del Data Set
+```{r echo=F,results='asis',error=F,warning=F,message=FALSE}
+nba <- read_csv("nba.csv")
+pander::pander(head(nba[,1:6]),format = "markdown")
+
+```
+# Limpieza de datos
+Los paises de origen de los jugadoes son los siguientes:
+```{r echo=FALSE}
+nba_origen <- nba %>%
+  group_by(NBA_Country)%>%
+  count(NBA_Country)
+pander::pander(nba_origen)
+pander::pander(unique(nba$NBA_Country))
+
+            
+```
+
+Bosnia es el único pais que aparece dos veces escrito por lo que hay que corregirlo.
+
+```{r eval=TRUE}
+nba$NBA_Country[nba$NBA_Country == "Bosnia & Herz..."] <- "Bosnia"
+
+```
+Ahora tenemos todos los datos de paises limpios.
+
+
+El siguiente paso es eliminar las variables inútiles en nuestro modelo como son:
+`nba$Player`
+```{r eval=TRUE}
+
+nba$Player <- NULL
+```
+
+
+
+# Trtamiento de Dummy
+
+  Tenemos dos dummies posibles: el pais de origen `nba$NBA_Country` y el equipo del
+jugador `nba$TM`. Creamos dos tablas con valores 1 y 0 para crear las dummies.
+
+```{r echo=FALSE, eval=TRUE}
+
+  
+dummy_country <- dummy_cols(nba$NBA_Country) #creamos las dummys
+dummy_team <- dummy_cols(nba$Tm)  
+nba <- cbind(nba, dummy_country,dummy_team )
+
+pander::pander(head(dummy_country[,9:6]), "Dummy pais (muestra)")
+
+pander::pander(head(dummy_team[,9:6]),  "Dummy equipo (muestra)")
+
+```
+
+Hechas las tablas dummies tenemos qeu hacer lo siguiente:
+
+1. Eliminar `nba$Country` porque está formacada por caracteres.
+
+2. Eliminar `nba$.data` 
+
+3. Eliminar `nba$Tm` al ser también de tipo caracter.
+
+4. Eliminar una variable por cada tabla dummy para evitar la dependencia:
+  `nba$.data_Argentina` y `nba$.data_BOS`
+```{r eval=TRUE}
+
+nba$NBA_Country <- NULL
+nba$.data <- NULL
+nba$.data <- NULL
+nba$Tm <- NULL
+nba$.data_Argentina <- NULL 
+nba$.data_BOS <- NULL
+
+```
+
+# Crear "Train Set" y "Test Set"
+
+En este paso vamos a didivir el data set `nba` en dos para en una parte crear el 
+modelo y en otra para probarlo.
+
+El *train set* tendrá 436 observaciones y el *test set* tendrá 50 observaciones.
+
+
+```{r eval=TRUE}
+set.seed(1234)
+row <- sample(nrow(nba))
+trainSet <- nba[row[1:436],]
+View(trainSet)
+
+testSet <- nba[row[437:485],]
+View(testSet)
+
+View(nba)
+```
+
+# Modelo sin normalidad
+
+```{r ,eval=TRUE, out.width="50%", message=FALSE, warning=FALSE}
+modelosSinNormalidad <- lm(Salary ~. ,data = trainSet)
+
+
+```
+```{r, echo=FALSE }
+par(mfrow = c(2,2)) 
+plot(modelosSinNormalidad)
+
+```
+
+
+```{r ,eval=FALSE}
+gvmodel <- gvlma(modelosSinNormalidad)
+summary(gvmodel)
+
+```
+```{r table0, echo=FALSE, message=FALSE, warnings=FALSE, results='asis' }
+tabl <- " 
+|                    |Value   |p-value  |       Decision             |
+|-------------------:|--------|:---------|--------------------------:|                      
+|Global Stat         |123.073 |0.000e+00 | Assumptions NOT satisfied!|
+|Skewness            |27.210  |1.826e-07 | Assumptions NOT satisfied!|
+|Kurtosis            |47.528  |5.421e-12 | Assumptions NOT satisfied!|
+|Link Function       |46.040  |1.159e-11 | Assumptions NOT satisfied!|
+|Heteroscedasticity  |2.295   |1.298e-01 | Assumptions acceptable.   |  
+"
+cat(tabl)
+```
+
+No hay normalidad, además la forma de curvilínea de los gráficos nos indica que
+que la distribución del salario cambia en función de la cantidad (tiene dos
+comportamientos)
+
+# Transformación de variables y tratamiento de outliers
+
+  Para corregir nuestros datos necesitamos volver a las gráficas anteriores y ver
+lo que nos dice cada uno para poder tomar decisiones.
+
+  El gráfico de los Residuals vs Fitted nos dice que no hay una tendencia lineal
+entre las observaciones por la curva que hace la linea ajustada.
+
+  En el QQ-normal si que podemos pensar en normalidad pero hay outlier.
+
+  En el Scale-Location plot, que muestra si los residuos están igualmente 
+distribuidos a lo largo de los predictores, se ve que en la parte la izquierda 
+ahay una concentración de puntos con una tendencia cuvilinea por lo que nos
+indica que no hay homocedasticidad
+
+  Y en el Residuals vs Leverage, se utiliza para dentificar los outliers que son influyentes
+en la regresión y que habría que eliminar. En nuestro caso ningún valor supera 
+la distancia de 0.5 de Cook. Sin embargo, hay datos que están en extremos en los 
+cuatro gráficos: 242,387, 114, 175 y 387. 
+
+
+```{r, eval=TRUE}
+
+powerTransform(nba$Salary)
+summary(powerTransform(nba$Salary))
+
+```
+
+
+
+# Modelo con normalidad
+
+  Aplicando la transformacion por la potencia (0.2146177) de la variable Salary, tenemos
+un nuevo modelo.
+
+```{r, echo=FALSE, warning=FALSE}
+
+modeloConNormalidad <- lm(Salary^0.2146177 ~. ,data = trainSet)
+
+```
+```{r, echo=FALSE, warning=FALSE }
+par(mfrow = c(2,2)) 
+plot(modeloConNormalidad)
+
+```
+```{r, echo=FALSE}
+gvmodel <- gvlma(modeloConNormalidad)
+
+
+```
+
+
+
+```{r table1, echo=FALSE, message=FALSE, warnings=FALSE, results='asis' }
+tabl <- " 
+|                    |Value     |p-value|       Decision         |
+|-------------------:|----------|:------|-----------------------:|                      
+|Global Stat         |2.644402  |0.6190 | Assumptions acceptable.|
+|Skewness            |0.005965  |0.9384 | Assumptions acceptable.|
+|Kurtosis            |1.154845  |0.2825 | Assumptions acceptable.|
+|Link Function       |0.008319  |0.9273 | Assumptions acceptable.|
+|Heteroscedasticity  |1.475274  |0.2245 | Assumptions acceptable.|
+"
+cat(tabl)
+```
+
+
+  Una vez que hemos obtenido mediante una transformación la aceptación de linealidad
+del modelo, podemos mejorarlo en base al criterio Akaike que usa un trade-off
+entre la bondad de ajuste del modelo y la complejidad del modelo, por lo que podemos
+tener un modelo más resumido sin perder mucha información.
+
+```{r eval=FALSE}
+modeloConNormalidad <- lm(formula = Salary^0.2146177 ~ NBA_DraftNumber + Age + G + MP + 
+     PER + `TS%` + FTr + `ORB%` + `DRB%` + `TRB%` + `AST%` + `TOV%` + 
+     `USG%` + `WS/48` + OBPM + BPM + .data_Australia + .data_Cameroon + 
+     `.data_Democratic Re...` + .data_France + .data_Russia + 
+     .data_Senegal + .data_Turkey + `.data_United Kingdo...` + 
+     .data_ATL + .data_BRK + .data_CHI + .data_CHO + .data_CLE + 
+     .data_DEN + .data_DET + .data_IND + .data_LAC + .data_MEM + 
+     .data_MIA + .data_MIL + .data_MIN + .data_NYK + .data_OKC + 
+     .data_ORL + .data_PHO + .data_POR + .data_SAC + .data_TOR + 
+     .data_TOT + .data_WAS, data = trainSet)
+
+
+gvmodel <- gvlma(modeloConNormalidad)
+summary(gvmodel)
+
+
+```
+
+
+
+
+
+Ahora si aceptamos linealidad en nuestro modelo y podemos predecir salarios 
+en función de un *input* dado.
+
+# Cross validation Test
+
+## Modelo con normalidad
+  Antes de dar al modelo como válido, conviene probarlo en un conjuto de datos
+a los que no ha tenido acceso `trainSet`.
+
+  Para esto, aplicamos el modelo al `trainSet` y el resultado lo elevamos a la 
+inversa de 0.21 debido a la anterior transformación de la varible Y. Luego le restamos
+los salarios reales para ver la precisión del modelo.
+
+```{r, eval=FALSE}
+
+salarios_prediccion_test <- predict(modeloConNormalidad,newdata =testSet)^(1/0.2146) 
+
+```
+
+```{r, echo=FALSE, out.width="50%", message=FALSE, warning=FALSE}
+
+modeloConNormalidad <- lm(formula = Salary^0.2146177 ~ NBA_DraftNumber + Age + G + MP + 
+     PER + `TS%` + FTr + `ORB%` + `DRB%` + `TRB%` + `AST%` + `TOV%` + 
+     `USG%` + `WS/48` + OBPM + BPM + .data_Australia + .data_Cameroon + 
+     `.data_Democratic Re...` + .data_France + .data_Russia + 
+     .data_Senegal + .data_Turkey + `.data_United Kingdo...` + 
+     .data_ATL + .data_BRK + .data_CHI + .data_CHO + .data_CLE + 
+     .data_DEN + .data_DET + .data_IND + .data_LAC + .data_MEM + 
+     .data_MIA + .data_MIL + .data_MIN + .data_NYK + .data_OKC + 
+     .data_ORL + .data_PHO + .data_POR + .data_SAC + .data_TOR + 
+     .data_TOT + .data_WAS, data = trainSet)
+
+salarios_prediccion_test <- predict(modeloConNormalidad,newdata =testSet)^(1/0.2146) 
+salarios_reales_test <- testSet$Salary
+diferencia_test <-  salarios_reales_test - salarios_prediccion_test
+precision_test <- as.data.frame(cbind(salarios_prediccion_test, salarios_reales_test, diferencia_test))
+
+
+ggplot(precision_test,aes(salarios_prediccion_test,salarios_reales_test)) +
+  geom_jitter(color = "orange") +
+  geom_smooth()
+
+ggplot(precision_test)+
+  geom_histogram(aes(diferencia_test),
+                 fill = "orange",
+                 color= "black"
+                 )
+```
+
+## Modelo sin normalidad
+
+```{r, eval=FALSE}
+
+salarios_prediccion_test <- predict(modeloSinNormalidad,newdata =testSet)
+
+```
+
+```{r, echo=FALSE, out.width="50%", message=FALSE, warning=FALSE}
+
+modeloSinNormalidad <- lm(formula = Salary ~. , data = trainSet)
+
+salarios_prediccion_test <- predict(modeloSinNormalidad,newdata =testSet)
+salarios_reales_test <- testSet$Salary
+diferencia_test <-  salarios_reales_test - salarios_prediccion_test
+precision_test <- as.data.frame(cbind(salarios_prediccion_test, salarios_reales_test, diferencia_test))
+
+
+ggplot(precision_test,aes(salarios_prediccion_test,salarios_reales_test)) +
+  geom_jitter(color = "green") +
+  geom_smooth()
+
+ggplot(precision_test)+
+  geom_histogram(aes(diferencia_test),
+                 fill = "green",
+                 color= "black"
+                 )
+```
+
+Observamos una cierta relación pero no suficiente para predecir y poner un 
+salario a un jugador usando todas las varibles del modelo. 
+```{r}
+AIC(modeloConNormalidad, modelosSinNormalidad)
+BIC(modeloConNormalidad, modelosSinNormalidad)
+```
+
+# Conclusión
+
+
+Como conclusión decir que el modelo final es poco predictivo. Esto se debe a la 
+complejidad que tiene la NBA en cuanto a salarios. Por un lado, los equipos tienen
+límite salarial por lo qeu esto tiene bastante influencia en el tope salarial de 
+un jugador que gana menos que lo que indica su rendimiento. Por otro lado,
+la situación de cada jugador es única: lesiones, jugadores retirados que siguen
+cobrando del equipo o que su anterior temporada haya sido la mejor y el actual
+salario no refleje la realidad.
+
+Una variable para ver esto es en `nba$MP` (minutos jugados), donde se aprecia 
+que hay muchos jugadores con menos de 500 minutos jugados cobrando más dinero que 
+la media (posiblemente por las razones anteriores).
+
+La realidad que hay que aplicar al modelo de negocio es poner en contexto para 
+qué quieres el jugador: un jugador que juegue muchos minutos y se fundamental o no.
+De aquí se haría un modelo clúster que explique mejor el salario para un tipo 
+de jugador.
+
+
+
+
+
+
+
+
+
